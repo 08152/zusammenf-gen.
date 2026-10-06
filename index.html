@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FBX Animation Merger</title>
+
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#101014;color:#fff;font-family:Arial}
+#app{display:flex;width:100%;height:100%}
+#left{width:310px;background:#18181d;border-right:1px solid #333;padding:16px;overflow:auto}
+#main{flex:1;position:relative}
+h1{font-size:20px;margin:0 0 18px}
+h2{font-size:14px;color:#aaa;margin:20px 0 8px}
+button,.file{
+width:100%;
+padding:12px;
+margin:5px 0;
+border:1px solid #444;
+border-radius:8px;
+background:#25252c;
+color:white;
+cursor:pointer;
+font-size:14px;
+}
+button:hover,.file:hover{background:#33333b}
+.primary{background:#5b35d5;border-color:#7657e8}
+.primary:hover{background:#7049ef}
+input[type=file]{display:none}
+#files{font-size:12px;color:#bbb}
+.fileItem{
+padding:9px;
+margin:5px 0;
+background:#222229;
+border-radius:7px;
+word-break:break-all;
+}
+#status{
+position:absolute;
+bottom:15px;
+left:15px;
+padding:9px 13px;
+background:#000b;
+border-radius:8px;
+font-size:12px;
+}
+#info{
+position:absolute;
+top:15px;
+right:15px;
+background:#000b;
+padding:10px 13px;
+border-radius:8px;
+font-size:12px;
+}
+canvas{display:block}
+</style>
+</head>
+
+<body>
+
+<div id="app">
+
+<div id="left">
+
+<h1>FBX Animation Studio</h1>
+
+<label class="file">
+FBX Modell auswählen
+<input id="modelInput" type="file" accept=".fbx">
+</label>
+
+<label class="file">
+Animationen hinzufügen
+<input id="animInput" type="file" accept=".fbx">
+</label>
+
+<h2>Modell</h2>
+<div id="modelName">Kein Modell geladen</div>
+
+<h2>Animationen</h2>
+<div id="files"></div>
+
+<button onclick="playAnimation()">▶ Animation abspielen</button>
+<button onclick="stopAnimation()">■ Stop</button>
+
+<h2>Export</h2>
+
+<button class="primary" onclick="exportFBX()">
+⬇ FBX herunterladen
+</button>
+
+<button onclick="exportGLB()">
+⬇ GLB herunterladen
+</button>
+
+<button onclick="clearAll()">
+Alles löschen
+</button>
+
+</div>
+
+<div id="main">
+<div id="info">FBX Animation Studio</div>
+<div id="status">Bereit</div>
+</div>
+
+</div>
+
+<script type="importmap">
+{
+  "imports":{
+    "three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+
+import * as THREE from "three";
+import {FBXLoader} from "three/addons/loaders/FBXLoader.js";
+import {GLTFExporter} from "three/addons/exporters/GLTFExporter.js";
+import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111116);
+
+const camera = new THREE.PerspectiveCamera(
+60,
+window.innerWidth/window.innerHeight,
+0.01,
+10000
+);
+
+camera.position.set(3,2,5);
+
+const renderer = new THREE.WebGLRenderer({
+antialias:true,
+preserveDrawingBuffer:true
+});
+
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(window.innerWidth-310,window.innerHeight);
+renderer.shadowMap.enabled=true;
+
+document.getElementById("main").appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;
+
+const light1 = new THREE.HemisphereLight(
+0xffffff,
+0x333333,
+2
+);
+
+scene.add(light1);
+
+const light2 = new THREE.DirectionalLight(
+0xffffff,
+3
+);
+
+light2.position.set(5,10,5);
+light2.castShadow=true;
+scene.add(light2);
+
+const grid = new THREE.GridHelper(20,20,0x555555,0x292929);
+scene.add(grid);
+
+const loader = new FBXLoader();
+
+let model = null;
+let mixer = null;
+let animations = [];
+let animationFiles = [];
+let currentAction = null;
+
+const clock = new THREE.Clock();
+
+const modelInput=document.getElementById("modelInput");
+const animInput=document.getElementById("animInput");
+
+modelInput.addEventListener("change",async e=>{
+const file=e.target.files[0];
+
+if(!file)return;
+
+setStatus("Lade FBX Modell...");
+
+const url=URL.createObjectURL(file);
+
+try{
+
+const object=await loader.loadAsync(url);
+
+if(model){
+scene.remove(model);
+}
+
+model=object;
+
+model.traverse(o=>{
+if(o.isMesh){
+o.castShadow=true;
+o.receiveShadow=true;
+}
+});
+
+scene.add(model);
+
+modelName.textContent=file.name;
+
+if(model.animations && model.animations.length){
+animations.push(...model.animations);
+}
+
+mixer=new THREE.AnimationMixer(model);
+
+centerModel();
+
+updateAnimationList();
+
+setStatus("Modell geladen");
+
+}catch(err){
+
+console.error(err);
+setStatus("FBX konnte nicht geladen werden");
+
+}
+
+URL.revokeObjectURL(url);
+
+});
+
+animInput.addEventListener("change",async e=>{
+
+const files=[...e.target.files];
+
+for(const file of files){
+
+setStatus("Lade Animation: "+file.name);
+
+const url=URL.createObjectURL(file);
+
+try{
+
+const object=await loader.loadAsync(url);
+
+if(object.animations){
+
+for(const clip of object.animations){
+
+clip.name=file.name+" / "+clip.name;
+animations.push(clip);
+
+}
+
+}
+
+animationFiles.push(file);
+
+updateAnimationList();
+
+}catch(err){
+
+console.error(err);
+
+}
+
+URL.revokeObjectURL(url);
+
+}
+
+setStatus("Animationen geladen");
+
+});
+
+function centerModel(){
+
+if(!model)return;
+
+const box=new THREE.Box3().setFromObject(model);
+const center=box.getCenter(new THREE.Vector3());
+const size=box.getSize(new THREE.Vector3());
+
+model.position.sub(center);
+
+const max=Math.max(size.x,size.y,size.z);
+
+camera.position.set(
+max*1.8,
+max*1.2,
+max*2.2
+);
+
+camera.near=max/1000;
+camera.far=max*100;
+
+camera.updateProjectionMatrix();
+
+controls.target.set(0,0,0);
+
+}
+
+function updateAnimationList(){
+
+const container=document.getElementById("files");
+
+container.innerHTML="";
+
+animations.forEach((clip,i)=>{
+
+const div=document.createElement("div");
+
+div.className="fileItem";
+
+div.innerHTML=
+(i+1)+". "+
+clip.name+
+"<br><small>"+
+clip.duration.toFixed(2)+
+" Sekunden</small>";
+
+container.appendChild(div);
+
+});
+
+}
+
+window.playAnimation=function(){
+
+if(!model||!mixer||!animations.length)return;
+
+if(currentAction){
+
+currentAction.stop();
+
+}
+
+const clip=animations[0];
+
+currentAction=mixer.clipAction(clip);
+
+currentAction.reset();
+currentAction.play();
+
+setStatus("Spiele: "+clip.name);
+
+};
+
+window.stopAnimation=function(){
+
+if(currentAction){
+
+currentAction.stop();
+currentAction=null;
+
+}
+
+setStatus("Animation gestoppt");
+
+};
+
+window.exportGLB=function(){
+
+if(!model){
+
+alert("Bitte zuerst ein FBX-Modell laden.");
+return;
+
+}
+
+setStatus("Erstelle GLB...");
+
+const exporter=new GLTFExporter();
+
+const exportScene=new THREE.Scene();
+
+const cloned=model.clone(true);
+
+cloned.animations=animations;
+
+exportScene.add(cloned);
+
+exporter.parse(
+exportScene,
+result=>{
+
+const blob=new Blob(
+[result],
+{type:"model/gltf-binary"}
+);
+
+downloadBlob(blob,"combined_fbx_animations.glb");
+
+setStatus("GLB exportiert");
+
+},
+error=>{
+console.error(error);
+setStatus("Export fehlgeschlagen");
+},
+{
+binary:true,
+animations:animations,
+trs:true
+}
+);
+
+};
+
+window.exportFBX=function(){
+
+if(!model){
+
+alert("Bitte zuerst ein FBX-Modell laden.");
+return;
+
+}
+
+/*
+Three.js besitzt keinen nativen FBXExporter.
+
+Damit keine falsche Datei erzeugt wird, exportiert dieser
+Button das originale FBX-Modell unverändert, wenn ein
+Original-FBX vorhanden ist.
+
+Das tatsächliche Zusammenführen mehrerer FBX-Dateien zu
+einer neuen FBX-Datei benötigt einen FBX-SDK/Converter
+außerhalb des Browsers.
+*/
+
+if(modelInput.files.length){
+
+const file=modelInput.files[0];
+
+const copy=new Blob(
+[file],
+{type:"application/octet-stream"}
+);
+
+downloadBlob(copy,"model_original.fbx");
+
+setStatus(
+"Original-FBX heruntergeladen"
+);
+
+}else{
+
+alert(
+"Kein originales FBX verfügbar."
+);
+
+}
+
+};
+
+function downloadBlob(blob,name){
+
+const url=URL.createObjectURL(blob);
+
+const a=document.createElement("a");
+
+a.href=url;
+a.download=name;
+
+document.body.appendChild(a);
+a.click();
+a.remove();
+
+setTimeout(()=>{
+URL.revokeObjectURL(url);
+},1000);
+
+}
+
+window.clearAll=function(){
+
+if(model){
+
+scene.remove(model);
+model=null;
+
+}
+
+animations=[];
+animationFiles=[];
+mixer=null;
+currentAction=null;
+
+document.getElementById("files").innerHTML="";
+document.getElementById("modelName").textContent=
+"Kein Modell geladen";
+
+modelInput.value="";
+animInput.value="";
+
+setStatus("Alles gelöscht");
+
+};
+
+function setStatus(text){
+
+document.getElementById("status").textContent=text;
+
+}
+
+function animate(){
+
+requestAnimationFrame(animate);
+
+const delta=clock.getDelta();
+
+if(mixer){
+
+mixer.update(delta);
+
+}
+
+controls.update();
+
+renderer.render(scene,camera);
+
+}
+
+animate();
+
+window.addEventListener("resize",()=>{
+
+renderer.setSize(
+window.innerWidth-310,
+window.innerHeight
+);
+
+camera.aspect=
+(window.innerWidth-310)/
+window.innerHeight;
+
+camera.updateProjectionMatrix();
+
+});
+
+</script>
+
+</body>
+</html>
